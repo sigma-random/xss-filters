@@ -256,9 +256,9 @@ exports._getPrivFilters = function () {
      * Format Exception Object for yuwl
      * @param {string} value - the element that violates the format
      */
-    function yuwlException(value) {
+    function yuwlException(value, message) {
         this.value = value;
-        this.message = 'does not conform to the expected format';
+        this.message = message || 'does not conform to the expected format';
         this.toString = function() {
           return this.value + this.message;
         };
@@ -291,6 +291,7 @@ exports._getPrivFilters = function () {
      * @param {Object[]} options.hosts - an optional array of hostnames that each matches /^[\w\.-]+$/. If any one is found unmatched, return null
      * @param {boolean} options.subdomain - to enable subdomain matching of the allowHosts
      * @param {boolean} options.relPath - to allow relative path
+     * @param {boolean} options.imgDataURIs - to allow data protocol that restricts the MIME type to image/gif, image/jpeg, image/jpg, or image/png and the encoding format as base64
      * @param {boolean} options.htmlDecode - to run html decoding first before applying the tests
      * @param {yuwlFactoryAbsCallback} options.absCallback - if matched, called to further process the url, protocol, host, and port number, to control what is returned
      * @param {yuwlFactoryRelCallback} options.relCallback - if matched, called to further process the url, to control what is returned
@@ -301,6 +302,7 @@ exports._getPrivFilters = function () {
         options || (options = {});
 
         var i, n, arr, reElement, reProtos, reHosts,
+            reImgDataURIs = options.imgDataURIs && /^[\x00-\x20]*(data):image\/(?:gif|jpe?g|png);base64,/i;
             reRelPath = options.relPath && /^[\x00-\x20]*(?![a-z][a-z0-9+-.]*:|[\/\\]{2})/i;
 
         // if options.protocols are provided
@@ -308,6 +310,9 @@ exports._getPrivFilters = function () {
             // throw yuwlException if any of its array element violates the regexp /^[a-z0-9-]+$/i 
             reElement = /^[a-z0-9-]+$/i;
             for (i = 0; i < n; i++) {
+                // if (arr[i] === 'data') {
+                //     throw new yuwlException(arr[i], 'protocol should only be enabled through options.imgDataURIs');
+                // }
                 if (!reElement.test(arr[i])) {
                     throw new yuwlException(arr[i]);
                 }
@@ -317,14 +322,13 @@ exports._getPrivFilters = function () {
             reProtos = new RegExp(
                 '^[\\x00-\\x20]*(?:(' +
                 arr.join('|') +
-                (options.inheritProto ? '):\\/\\/|\\/\\/)' : '):\\/\\/)'), 'i');
+                (options.inheritProto ? '):|\\/\\/)' : '):)'), 'i');
 
         } else {
-            // the default reProtos 
-            // some safe URIs could be /^[\x00-\x20]*(?:(?:(blob:)?https?|ftp):\/\/|data:image\/(?:gif|jpe?g|png);base64,|\/\/)/i :
+            // the default reProtos
             reProtos = options.inheritProto ? 
-                        /^[\x00-\x20]*(?:(https?):\/\/|\/\/)/i :
-                        /^[\x00-\x20]*(https?):\/\//i;
+                        /^[\x00-\x20]*(?:(https?):|\/\/)/i :
+                        /^[\x00-\x20]*(https?):/i;
         }
 
         // if options.hosts are provided
@@ -339,7 +343,7 @@ exports._getPrivFilters = function () {
 
             // build reHosts from the hosts array, that is case insensitive
             reHosts = new RegExp(
-                (options.subdomain ? '^((?:[\\w-]+\\.)*(?:' : '^((?:') +
+                (options.subdomain ? '^(?:\\/\\/)?((?:[\\w-]+\\.)*(?:' : '^((?:') +
                 arr.join('|').replace(/\./g, '\\.') + 
                 '))(?:$|(?::(\\d*))?[\\/?#\\\\]?)', 'i');
         }
@@ -347,8 +351,8 @@ exports._getPrivFilters = function () {
         else if (options.absCallback) {
             // the default reHosts
             reHosts = options.subdomain ? 
-                /^((?:[\w-]+\.)*(?:[\w\.-]+))(?:$|(?::(\d*))?[\/?#\\]?)/i : 
-                /^([\w\.-]+)(?:$|(?::(\d*))?[\/?#\\]?)/i;
+                /^(?:\/\/)?((?:[\w-]+\.)*(?:[\w\.-]+))(?:$|(?::(\d*))?[\/?#\\]?)/i : 
+                /^(?:\/\/)?([\w\.-]+)(?:$|(?::(\d*))?[\/?#\\]?)/i;
         }
 
         return function(url) {
@@ -363,11 +367,12 @@ exports._getPrivFilters = function () {
                 return options.relCallback ? options.relCallback(url) : url;
             }
 
-            // its protocol is allowed, and no host restrictions, or 
-            // its protocol and host is both allowed
-            if ((protocol = reProtos.exec(url)) !== null && 
-                (!reHosts || (hostPort = reHosts.exec(url.slice(protocol[0].length))) !== null)) {
+            // extract the protocol (could be from a Data URI that matches also the MIME type)
+            protocol = reProtos.exec(url) || reImgDataURIs && reImgDataURIs.exec(url);
 
+            // the supplied protocol is allowed
+            // and no host restrictions, or host is also allowed
+            if (protocol && (!reHosts || (hostPort = reHosts.exec(url.slice(protocol[0].length))) !== null)) {
                 return options.absCallback ? options.absCallback(url, protocol[1], hostPort[1], hostPort[2]) : url;
             }
 
