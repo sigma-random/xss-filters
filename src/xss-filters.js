@@ -263,17 +263,38 @@ exports._getPrivFilters = function () {
           return this.value + this.message;
         };
     }
+    /**
+     * This is what a yuwlFactoryAbsCallback would expect
+     *
+     * @callback yuwlFactoryCallback
+     * @param {string} url
+     * @param {string} protocol - could be empty
+     * @param {string} host
+     * @param {string|undefined} port - could be empty, or undefined if does not exists
+     * @returns {string} the url
+     */
+
+    /**
+     * This is what a yuwlFactoryRelCallback would expect
+     *
+     * @callback yuwlFactoryCallback
+     * @param {string} url
+     * @returns {string} the url
+     */
+
     /* 
      * Create URL whitelist filter
      * Ref: https://url.spec.whatwg.org/#url-parsing
-     * @param {object} options allow configurations as follows
-     *  {array} protocols - an optional array of protocols, if not provided, only http:// and https:// are allowed
-     *  {boolean} inheritProto - to also enable inherited protocol (//)
-     *  {array} hosts - an optional array of hostnames that each matches /^[\w\.-]+$/. If any one is found unmatched, return null
-     *  {boolean} subdomain - to enable subdomain matching of the allowHosts
-     *  {boolean} relPath - to allow relative path
-     *  {boolean} htmlDecode - to run html decoding first before applying the tests
-     * @returns {function|null} the yuwl filter that tests value according to the config
+     * @param {Object} options allow configurations as follows
+     * @param {Object[]} options.protocols - an optional array of protocols, if not provided, only http:// and https:// are allowed
+     * @param {boolean} options.inheritProto - to also enable inherited protocol (//)
+     * @param {Object[]} options.hosts - an optional array of hostnames that each matches /^[\w\.-]+$/. If any one is found unmatched, return null
+     * @param {boolean} options.subdomain - to enable subdomain matching of the allowHosts
+     * @param {boolean} options.relPath - to allow relative path
+     * @param {boolean} options.htmlDecode - to run html decoding first before applying the tests
+     * @param {yuwlFactoryAbsCallback} options.absCallback - if matched, called to further process the url, protocol, host, and port number, to control what is returned
+     * @param {yuwlFactoryRelCallback} options.relCallback - if matched, called to further process the url, to control what is returned
+     * @returns {function} the yuwl filter that tests value according to the config
      */
     function yuwlFactory (options) {
         /*jshint -W030 */
@@ -282,9 +303,9 @@ exports._getPrivFilters = function () {
         var i, n, arr, reElement, reProtos, reHosts,
             reRelPath = options.relPath && /^[\x00-\x20]*(?![a-z][a-z0-9+-.]*:|[\/\\]{2})/i;
 
-        // create reProtos from the hosts array, that is case insensitive
-        // throw yuwlException if any of its element does not conform to the regexp /^[a-z0-9-]+$/i 
+        // if options.protocols are provided
         if ((arr = options.protocols) && (n = arr.length)) {
+            // throw yuwlException if any of its array element violates the regexp /^[a-z0-9-]+$/i 
             reElement = /^[a-z0-9-]+$/i;
             for (i = 0; i < n; i++) {
                 if (!reElement.test(arr[i])) {
@@ -292,22 +313,23 @@ exports._getPrivFilters = function () {
                 }
             }
 
+            // build reProtos from the protocols array, that is case insensitive
             reProtos = new RegExp(
-                '^[\\x00-\\x20]*(?:(?:' +
+                '^[\\x00-\\x20]*(?:(' +
                 arr.join('|') +
-                (options.inheritProto ? '):\\/\\/|\\/\\/)' : ':\\/\\/))'), 'i');
+                (options.inheritProto ? '):\\/\\/|\\/\\/)' : '):\\/\\/)'), 'i');
 
         } else {
-            // reProtos = options.allowAllSafeURIs ? 
-            //             /^[\x00-\x20]*(?:(?:(blob:)?https?|ftp):\/\/|data:image\/(?:gif|jpe?g|png);base64,|\/\/)/i :
+            // the default reProtos 
+            // some safe URIs could be /^[\x00-\x20]*(?:(?:(blob:)?https?|ftp):\/\/|data:image\/(?:gif|jpe?g|png);base64,|\/\/)/i :
             reProtos = options.inheritProto ? 
-                        /^[\x00-\x20]*(?:https?:\/\/|\/\/)/i :
-                        /^[\x00-\x20]*https?:\/\//i;
+                        /^[\x00-\x20]*(?:(https?):\/\/|\/\/)/i :
+                        /^[\x00-\x20]*(https?):\/\//i;
         }
 
-        // create reHosts from the hosts array, that is case insensitive
-        // throw yuwlException if any of its element does not conform to the regexp /^[\w\.-]+$/ 
+        // if options.hosts are provided
         if ((arr = options.hosts) && (n = arr.length)) {
+            // throw yuwlException if any of its array element violates to the regexp /^[\w\.-]+$/ 
             reElement = /^[\w\.-]+$/;
             for (i = 0; i < n; i++) {
                 if (!reElement.test(arr[i])) {
@@ -315,25 +337,40 @@ exports._getPrivFilters = function () {
                 }
             }
 
+            // build reHosts from the hosts array, that is case insensitive
             reHosts = new RegExp(
-                (options.subdomain ? '^(?:[\\w-]+\\.)*(?:' : '^(?:') +
+                (options.subdomain ? '^((?:[\\w-]+\\.)*(?:' : '^((?:') +
                 arr.join('|').replace(/\./g, '\\.') + 
-                ')(?:$|[\\/?#\\\\])', 'i');
-
+                '))(?:$|(?::(\\d*))?[\\/?#\\\\]?)', 'i');
+        }
+        // extract the host and port number if options.absCallback is present
+        else if (options.absCallback) {
+            // the default reHosts
+            reHosts = options.subdomain ? 
+                /^((?:[\w-]+\.)*(?:[\w\.-]+))(?:$|(?::(\d*))?[\/?#\\]?)/i : 
+                /^([\w\.-]+)(?:$|(?::(\d*))?[\/?#\\]?)/i;
         }
 
         return function(url) {
+            var protocol, hostPort;
+
             if (options.htmlDecode) {
                 url = htmlDecode(url);
             }
+
             // either its a relativeURL, or 
+            if (options.relPath && reRelPath.test(url)) {
+                return options.relCallback ? options.relCallback(url) : url;
+            }
+
             // its protocol is allowed, and no host restrictions, or 
             // its protocol and host is both allowed
-            if ((options.relPath && reRelPath.test(url)) || 
-                ((result = reProtos.exec(url)) !== null && 
-                    (!reHosts || (reHosts && reHosts.test(url.slice(result[0].length)))))) {
-                return url;
+            if ((protocol = reProtos.exec(url)) !== null && 
+                (!reHosts || (hostPort = reHosts.exec(url.slice(protocol[0].length))) !== null)) {
+
+                return options.absCallback ? options.absCallback(url, protocol[1], hostPort[1], hostPort[2]) : url;
             }
+
             return 'unsafe:' + url;
         };
     }
